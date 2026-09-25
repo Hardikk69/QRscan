@@ -6,7 +6,7 @@
  * Decoding is the standard LT peeling algorithm: a packet whose unknown-chunk set has been
  * reduced to one chunk solves that chunk, which may in turn reduce other held packets.
  */
-import { computeSHA256, parseFrame } from './protocol.js';
+import { computeSHA256, describeForeign, parseFrame } from './protocol.js';
 import { pickChunks, xorInto } from './fountain.js';
 
 export class FrameAssembler {
@@ -23,6 +23,8 @@ export class FrameAssembler {
     this.totalChunks = 0;
     this.chunkSize = 0;
     this.duplicates = 0;      // Repeated or fully redundant packets
+    this.ignored = 0;         // Decoded QR codes that were not frames of this transfer
+    this.otherVersion = null; // Protocol id/prefix of a sender running a different version
     this.bytes = 0;           // Useful (solved) bytes, for the throughput readout
     this.startTime = 0;
   }
@@ -33,11 +35,19 @@ export class FrameAssembler {
    */
   push(text, now = performance.now()) {
     const frame = parseFrame(text);
-    if (!frame) return null;
+    if (!frame) {
+      this.ignored++;
+      const foreign = describeForeign(text);
+      if (foreign.reason === 'version') this.otherVersion = foreign.version;
+      return null;
+    }
 
     // The first valid frame (data or meta) locks the receiver to that transfer
     if (!this.transferId) this.transferId = frame.transferId;
-    else if (frame.transferId !== this.transferId) return null;
+    else if (frame.transferId !== this.transferId) {
+      this.ignored++;
+      return null;
+    }
 
     if (frame.type === 'meta') {
       if (this.meta) return null;

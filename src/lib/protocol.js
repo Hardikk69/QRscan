@@ -96,6 +96,26 @@ export function parseFrame(text) {
 }
 
 /**
+ * Why a scanned code was ignored, for the receiver's status line.
+ * A sender running a different protocol version is the one case worth calling out:
+ * it looks exactly like "the camera reads nothing" otherwise.
+ * @returns {{ reason: 'version'|'foreign', version?: string }}
+ */
+export function describeForeign(text) {
+  const prefix = /^([A-Z]+\d+):/.exec(text || '');
+  if (prefix && prefix[1] !== FRAME_PREFIX) return { reason: 'version', version: prefix[1] };
+  try {
+    const json = JSON.parse(text);
+    if (json && typeof json.protocol === 'string' && json.protocol !== PROTOCOL_ID) {
+      return { reason: 'version', version: json.protocol };
+    }
+  } catch {
+    // Not JSON
+  }
+  return { reason: 'foreign' };
+}
+
+/**
  * Prepares a file for sending. Fountain packets are endless, so frames are generated on
  * demand by position instead of being precomputed: each block of frames is one metadata
  * frame followed by META_EVERY packets.

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { formatBytes, truncateMiddle } from '../lib/protocol.js';
+import { formatBytes, PROTOCOL_ID, truncateMiddle } from '../lib/protocol.js';
 import { listCameras, startScanner } from '../lib/scanner.js';
 import { chirp, haptic, successMelody } from '../lib/feedback.js';
 import { useAssembler } from '../hooks/useAssembler.js';
@@ -14,6 +14,7 @@ export default function Receiver() {
   const [audio, setAudio] = useState(true);
   const [scanMode, setScanMode] = useState(null); // null (camera off) | 'native' | 'library'
   const [result, setResult] = useState(null);    // { url, name, size, hash, verified }
+  const [scans, setScans] = useState(0);         // Codes decoded but ignored (foreign / wrong version)
   const readerRef = useRef(null);
   const scannerRef = useRef(null);   // Running scanner, 'starting' while it boots, or null
   const completingRef = useRef(false);
@@ -81,6 +82,7 @@ export default function Receiver() {
     if (completingRef.current) return;
     const kind = push(text);
     if (kind === 'data' || kind === 'meta') setStatus('RECEIVING');
+    else setScans(n => n + 1); // Decoded, but not part of this transfer
     if (kind === 'data' && audio) {
       chirp(880, 0.04);
       haptic(25);
@@ -98,6 +100,7 @@ export default function Receiver() {
   const resetTransfer = () => {
     reset();
     completingRef.current = false;
+    setScans(0);
     setResult(null);
     setStatus(scannerRef.current ? 'SCANNING' : 'WAITING');
   };
@@ -168,6 +171,25 @@ export default function Receiver() {
             </div>
           </div>
         )}
+        {asm.otherVersion && (
+          <div className="alert-box alert-danger" style={{ marginTop: '1rem' }}>
+            <div className="alert-icon">✗</div>
+            <div className="alert-content">
+              <strong>Sender is on a different protocol version ({asm.otherVersion}).</strong>
+              <p>This page expects {PROTOCOL_ID}. Reload both the sender and receiver pages (hard refresh: Ctrl+Shift+R, or pull down to refresh on a phone) so both run the same build.</p>
+            </div>
+          </div>
+        )}
+        {scanMode && !asm.transferId && (
+          <div className="alert-box" style={{ marginTop: '1rem' }}>
+            <div className="alert-icon">{scans ? '⚠️' : '🔍'}</div>
+            <div className="alert-content">
+              {scans
+                ? <><strong>{scans} QR code{scans === 1 ? '' : 's'} read, but none belong to a transfer.</strong><p>The camera is working. Check that the other device is on the Send page and that both pages run the same build.</p></>
+                : <><strong>Scanning...</strong><p>No QR code decoded yet. Fill the camera view with the sender screen, hold steady, and try the sender&apos;s Fullscreen button. If nothing happens, lower the sender&apos;s codes per frame or chunk size.</p></>}
+            </div>
+          </div>
+        )}
         {scanMode === 'library' && (
           <div className="alert-box" style={{ marginTop: '1rem' }}>
             <div className="alert-icon">⚠️</div>
@@ -207,7 +229,7 @@ export default function Receiver() {
           )}
 
           <div style={{ marginTop: '0.75rem', fontSize: '0.85rem', color: 'var(--text-muted)', display: 'flex', justifyContent: 'space-between' }}>
-            <span>Duplicate scans skipped: {asm.duplicates}</span>
+            <span>Duplicates skipped: {asm.duplicates}{asm.ignored ? ` · ignored codes: ${asm.ignored}` : ''}</span>
             <span>ID: {asm.transferId}</span>
           </div>
         </section>

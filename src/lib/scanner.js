@@ -46,10 +46,11 @@ export async function listCameras() {
  * Browsers also default to ~640x480, too low for dense QR frames, hence the HD request.
  */
 function cameraAttempts(cameraId) {
-  const base = cameraId
+  // Each `camera` must stay a single-key object: that is all html5-qrcode accepts
+  const cameras = cameraId
     ? [{ deviceId: { exact: cameraId } }]
-    : [{ facingMode: { exact: 'environment' } }, { facingMode: 'environment' }, {}];
-  return base.map(c => ({ ...c, width: { ideal: 1920 }, height: { ideal: 1080 } }));
+    : [{ facingMode: { exact: 'environment' } }, { facingMode: 'environment' }];
+  return cameras.map(camera => ({ camera, video: { ...camera, width: { ideal: 1920 }, height: { ideal: 1080 } } }));
 }
 
 /**
@@ -63,9 +64,9 @@ export async function startScanner(container, cameraId, onText) {
   if (detector) {
     let stream = null;
     let lastError = null;
-    for (const video of attempts) {
+    for (const attempt of [...attempts, { video: { width: { ideal: 1920 }, height: { ideal: 1080 } } }]) {
       try {
-        stream = await navigator.mediaDevices.getUserMedia({ audio: false, video });
+        stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: attempt.video });
         break;
       } catch (err) {
         lastError = err;
@@ -107,13 +108,14 @@ export async function startScanner(container, cameraId, onText) {
   }
 
   const Html5Qrcode = await loadHtml5Qrcode();
-  const scanner = new Html5Qrcode(container.id);
   let lastError = null;
-  for (const videoConstraints of attempts) {
+  for (const { camera, video } of attempts) {
+    // A fresh instance per attempt: a failed start leaves the old one mid-transition
+    const scanner = new Html5Qrcode(container.id);
     try {
-      await scanner.start(videoConstraints, {
+      await scanner.start(camera, {
         fps: 30,
-        videoConstraints,
+        videoConstraints: video,
         qrbox: (w, h) => {
           const edge = Math.floor(Math.min(w, h) * 0.85);
           return { width: edge, height: edge };
