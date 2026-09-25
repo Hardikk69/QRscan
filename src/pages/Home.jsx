@@ -1,9 +1,9 @@
 const STEPS = [
   ['Select a file', 'Pick any image, PDF, text, document, or archive directly from your device storage.'],
   ['File is split into frames', 'The file is sliced into small binary chunks, Base45-encoded into compact QR codes, with a SHA-256 hash in a separate metadata frame.'],
-  ['QR frames appear rapidly', 'The sender screen displays sequential QR codes in continuous transmission cycles.'],
+  ['QR frames appear rapidly', 'The sender screen shows a stream of fountain-coded QR frames, so any frame the camera misses is covered by later ones.'],
   ['Receiver scans with camera', "The receiver's camera captures frames, ignoring duplicates and tracking missing parts."],
-  ['Reconstruction & verify', 'All chunks are assembled in order, SHA-256 verified, and ready for instant local download.']
+  ['Reconstruction & verify', 'Once enough frames are captured the file is decoded, SHA-256 verified, and ready for instant local download.']
 ];
 
 export default function Home() {

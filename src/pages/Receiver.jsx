@@ -8,8 +8,9 @@ import { InfoGrid, MissingChunks, ProgressBar, StatusBadge } from '../components
 export default function Receiver() {
   const { asm, push, reset } = useAssembler();
   const [status, setStatus] = useState('WAITING');
-  const [cameras, setCameras] = useState(null); // null = still detecting
-  const [cameraId, setCameraId] = useState('');
+  const [cameras, setCameras] = useState([]); // Filled in after permission is granted
+  const [cameraId, setCameraId] = useState(''); // '' = let the browser pick the rear camera
+  const [activeCamera, setActiveCamera] = useState('');
   const [audio, setAudio] = useState(true);
   const [scanMode, setScanMode] = useState(null); // null (camera off) | 'native' | 'library'
   const [result, setResult] = useState(null);    // { url, name, size, hash, verified }
@@ -17,15 +18,6 @@ export default function Receiver() {
   const scannerRef = useRef(null);   // Running scanner, 'starting' while it boots, or null
   const completingRef = useRef(false);
   const onTextRef = useRef(null);
-
-  // Pick the rear camera on phones
-  useEffect(() => {
-    listCameras().then(list => {
-      setCameras(list);
-      const rear = list.findIndex(d => /back|rear|environment/i.test(d.label || ''));
-      if (list.length) setCameraId(list[Math.max(rear, 0)].id);
-    });
-  }, []);
 
   // Release the camera when leaving the page
   useEffect(() => () => {
@@ -46,6 +38,8 @@ export default function Receiver() {
       const scanner = await startScanner(readerRef.current, id, text => onTextRef.current(text));
       scannerRef.current = scanner;
       setScanMode(scanner.native ? 'native' : 'library');
+      setActiveCamera(scanner.label);
+      listCameras().then(setCameras); // Labels are only available once permission is granted
     } catch (err) {
       scannerRef.current = null;
       console.error('Camera start failure:', err);
@@ -64,6 +58,7 @@ export default function Receiver() {
       console.warn('Error stopping camera:', err);
     }
     setScanMode(null);
+    setActiveCamera('');
     setStatus(s => (s === 'SCANNING' ? 'WAITING' : s));
   };
 
@@ -138,10 +133,10 @@ export default function Receiver() {
           <div className="form-group" style={{ flex: 2 }}>
             <label htmlFor="cameraSelect">Camera Source:</label>
             <select id="cameraSelect" className="form-select" value={cameraId} onChange={e => changeCamera(e.target.value)}>
-              {cameras === null && <option value="">Detecting cameras...</option>}
-              {cameras?.length === 0 && <option value="">Default Camera</option>}
-              {cameras?.map((d, i) => <option key={d.id} value={d.id}>{d.label || `Camera ${i + 1}`}</option>)}
+              <option value="">Rear camera (automatic)</option>
+              {cameras.map(d => <option key={d.id} value={d.id}>{d.label}</option>)}
             </select>
+            {activeCamera && <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Using: {activeCamera}</span>}
           </div>
           <div className="form-group" style={{ flex: 1, justifyContent: 'flex-end' }}>
             <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', cursor: 'pointer', marginTop: '1.6rem', fontSize: '0.85rem' }}>
@@ -169,7 +164,7 @@ export default function Receiver() {
             <div className="alert-icon">ℹ️</div>
             <div className="alert-content">
               <strong>Camera Access Required:</strong>
-              <p>Please allow camera permissions. For mobile devices, the rear camera is selected automatically. If using another device on the same local network, modern browsers require HTTPS or localhost for camera access.</p>
+              <p>Please allow camera permissions. On phones the rear camera is requested automatically; pick a specific camera above only if the wrong one opens. If using another device on the same local network, modern browsers require HTTPS or localhost for camera access.</p>
             </div>
           </div>
         )}
@@ -208,7 +203,7 @@ export default function Receiver() {
           </div>
 
           {received > 0 && (
-            <MissingChunks title="Missing Chunks (Waiting for sender cycle):" missing={asm.missing(25)} count={asm.missingCount} />
+            <MissingChunks title="Chunks still missing (keep scanning; later frames repair them):" missing={asm.missing(25)} count={asm.missingCount} />
           )}
 
           <div style={{ marginTop: '0.75rem', fontSize: '0.85rem', color: 'var(--text-muted)', display: 'flex', justifyContent: 'space-between' }}>

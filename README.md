@@ -67,36 +67,56 @@ SENDER DEVICE                                              RECEIVER DEVICE
 - **React + Vite**: Small, testable modules; `npm run build` produces a static site that runs fully offline.
 - **Offline Self-Contained**: QR libraries are bundled into the build; no CDN needed.
 - **Binary Integrity via Web Crypto SHA-256**: Reconstructed files are verified byte-for-byte against the original hash before the user can download.
-- **Continuous Transmission Cycles**: Chunks cycle indefinitely (`Cycle 1, 2, 3...`), allowing the receiver to recover missing frames dropped due to camera glare or distance.
-- **Smart Deduplication & Missing Chunk Tracker**: Duplicate scans are filtered out; missing chunk indexes are tracked and visibly presented to the user.
+- **Fountain Coded (LT codes)**: Packets combine chunks so any missed frame is covered by later ones, with no cycle to wait for and no back channel.
+- **Smart Deduplication & Missing Chunk Tracker**: Repeated or redundant packets are filtered out; unsolved chunks are tracked and shown to the user.
 - **Adaptive Frame Tuning**: Easily toggle chunk sizes (300 B - 1000 B) and frame intervals (400 ms - 1500 ms).
 - **Single-Screen Loopback Simulator**: Includes `simulator.html` to simulate transmission and test frame drops, cycle recovery, and reassembly on a single device.
 - **Mobile Responsive**: Designed with mobile-first viewport styling, rear camera auto-selection (`facingMode: "environment"`), and subtle audio/haptic feedback.
 
 ---
 
-## 4. Technical Architecture & Chunk Metadata
+## 4. Protocol (V3, fountain coded)
 
-Each optical frame encapsulates a standardized JSON envelope:
+Two kinds of QR frame are shown in a stream; one metadata frame is inserted every 10 packets.
+
+**Packet frame** (pure QR-alphanumeric, so the encoder uses 5.5 bits/char instead of 8):
+
+```text
+OT3:<transferId>:<seed base36>:<totalChunks base36>:<Base45 payload>
+```
+
+**Metadata frame** (JSON):
 
 ```json
 {
-  "protocol": "OFFLINE_TRANSFER_V1",
-  "transferId": "tx_k3j189a_x7z912",
+  "protocol": "OFFLINE_TRANSFER_V3",
+  "transferId": "M8XK2Q9Z",
   "fileName": "document.pdf",
   "fileType": "application/pdf",
   "fileSize": 1048576,
   "fileHash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-  "chunkIndex": 14,
-  "totalChunks": 210,
-  "data": "JVBERi0xLjQKJeLjz9MKMS..."
+  "totalChunks": 1311
 }
 ```
 
-### Protocol Advantages
-- **First-Frame Discovery**: Every frame carries the file's metadata (`fileName`, `fileSize`, `fileHash`, `totalChunks`), so the receiver can begin tracking immediately regardless of which frame it scans first.
-- **Session Isolation**: `transferId` prevents mixing frames if multiple transfers take place or if a previous transfer was aborted.
-- **Chunked Base64 Safety**: Safe chunked binary conversion prevents stack overflow even on large ArrayBuffers.
+### Fountain coding (LT codes)
+
+Each packet is the XOR of a pseudo-random set of chunks, named only by `seed`: both sides derive
+the same set from it, so the receiver can rebuild the file from **any** set of packets slightly
+larger than the file, rather than needing each specific chunk. A missed frame costs about one
+extra packet instead of a wait for the next full cycle.
+
+- **Seeds `0 .. totalChunks-1` are the plain chunks in order** (systematic first pass), so a clean
+  transfer costs no more than sending the chunks directly.
+- **Later seeds are repair packets**, with degrees from a robust soliton distribution.
+- The receiver decodes by peeling: a packet reduced to one unknown chunk solves it, which may in
+  turn solve others.
+- Measured packets received per chunk: **1.0x at no loss, ~1.2-1.3x at 10-40% frame loss.**
+
+### Protocol advantages
+- **Loss tolerance without a back channel**: no acknowledgements, and the sender needs no camera.
+- **Session isolation**: `transferId` keeps frames from separate transfers apart.
+- **Integrity**: the reconstructed file is SHA-256 verified before download.
 
 ---
 

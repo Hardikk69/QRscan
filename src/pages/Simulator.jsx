@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { buildFrames, formatBytes, truncateMiddle } from '../lib/protocol.js';
+import { createEncoder, formatBytes, truncateMiddle } from '../lib/protocol.js';
 import { getNativeDetector } from '../lib/scanner.js';
 import { chirp, successMelody } from '../lib/feedback.js';
 import { useHashedFile } from '../hooks/useHashedFile.js';
@@ -24,7 +24,7 @@ export default function Simulator() {
   const [detector, setDetector] = useState(undefined); // undefined = checking, null = unsupported
 
   // Settings are captured when a run starts
-  const [run, setRun] = useState(null); // { frames, perFrame, startTime }
+  const [run, setRun] = useState(null); // { encoder, perFrame, startTime }
   const [running, setRunning] = useState(false);
   const [senderStatus, setSenderStatus] = useState('IDLE');
   const [result, setResult] = useState(null); // { url, name, seconds, verified }
@@ -34,11 +34,13 @@ export default function Simulator() {
   const decodeBusyRef = useRef(false);
   const doneRef = useRef(false);
 
-  const frames = run?.frames ?? [];
   const runPerFrame = run?.perFrame ?? perFrame;
-  const frameCount = Math.ceil(frames.length / runPerFrame);
-  const { index, cycle, setPos } = useFrameLoop(frameCount, interval, running);
-  const texts = useMemo(() => frames.slice(index * runPerFrame, (index + 1) * runPerFrame), [frames, index, runPerFrame]);
+  const { n, setN } = useFrameLoop(interval, running);
+  const texts = useMemo(() => (run
+    ? Array.from({ length: runPerFrame }, (_, i) => run.encoder.frameAt(n * runPerFrame + i))
+    : []), [run, n, runPerFrame]);
+  const framesPerPass = run ? Math.ceil(run.encoder.framesPerPass / runPerFrame) : 0;
+  const pass = framesPerPass ? Math.floor(n / framesPerPass) + 1 : 1;
 
   useEffect(() => {
     getNativeDetector().then(setDetector);
@@ -85,12 +87,12 @@ export default function Simulator() {
   }, [texts, running]);
 
   const start = () => {
-    const { frames } = buildFrames({ bytes: picked.bytes, fileName: picked.file.name, fileType: picked.file.type, fileHash: picked.hash, chunkSize });
+    const encoder = createEncoder({ bytes: picked.bytes, fileName: picked.file.name, fileType: picked.file.type, fileHash: picked.hash, chunkSize });
     reset();
     doneRef.current = false;
     setResult(null);
-    setRun({ frames, perFrame, startTime: performance.now() });
-    setPos({ index: 0, cycle: 1 });
+    setRun({ encoder, perFrame, startTime: performance.now() });
+    setN(0);
     setRunning(true);
     setSenderStatus('TRANSMITTING');
   };
@@ -118,7 +120,7 @@ export default function Simulator() {
         <div className="alert-icon">ℹ️</div>
         <div className="alert-content">
           <strong>Optical Pipeline Simulation:</strong>
-          <p>The left panel slices a real file and renders QR codes. The right panel reads the rendered frames (with a real QR decoder where the browser has one), ignores duplicates, tracks missing frames across cycles, and reconstructs the file.</p>
+          <p>The left panel slices a real file and renders QR codes. The right panel reads the rendered frames (with a real QR decoder where the browser has one), ignores duplicates, tracks what is still missing, and reconstructs the file.</p>
         </div>
       </div>
 
@@ -155,7 +157,7 @@ export default function Simulator() {
               <QrCanvas texts={texts} perFrame={runPerFrame} canvasRef={canvasRef} />
             </div>
             <div style={{ marginTop: '0.75rem', fontWeight: 600, fontSize: '0.85rem' }}>
-              Frame: {frameCount ? index + 1 : 0} / {frameCount} | Cycle: {cycle}
+              Frame: {framesPerPass ? (n % framesPerPass) + 1 : 0} / {framesPerPass} | {pass === 1 ? 'First pass' : `Repair pass ${pass}`}
             </div>
           </div>
         </section>

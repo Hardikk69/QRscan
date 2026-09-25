@@ -1,18 +1,20 @@
 /**
- * Transfer protocol (V2): framing, Base45 encoding, hashing and formatting helpers.
+ * Transfer protocol (V3): framing, Base45 encoding, hashing and formatting helpers.
  * No DOM access, so it runs in the browser and in Node tests.
  *
- * Data frame:  OT2:<transferId>:<index base36>:<total base36>:<Base45 bytes>
+ * Data frame:  OT3:<transferId>:<seed base36>:<total base36>:<Base45 packet>
+ *   The packet is a fountain-coded XOR of the chunks named by `seed` (see fountain.js).
  *   Pure QR-alphanumeric text (0-9 A-Z $%*+-./: space), so the QR encoder uses
  *   alphanumeric mode (5.5 bits/char) instead of byte mode (8 bits/char).
  * Meta frame:  JSON { protocol, transferId, fileName, fileType, fileSize, fileHash, totalChunks }
  *   Sent once every META_EVERY data frames instead of repeating it in every frame.
  */
+import { encodePacket, splitChunks } from './fountain.js';
 
-export const PROTOCOL_ID = 'OFFLINE_TRANSFER_V2';
+export const PROTOCOL_ID = 'OFFLINE_TRANSFER_V3';
 export const META_EVERY = 10;
 export const EC_LEVEL = 'L'; // Screens are clean; lowest error correction = most capacity
-const FRAME_PREFIX = 'OT2';
+const FRAME_PREFIX = 'OT3';
 const B45 = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ $%*+-./:';
 
 /** Base45 (RFC 9285) encode: 2 bytes -> 3 chars. */
@@ -59,13 +61,13 @@ export function generateTransferId() {
   return (Date.now().toString(36) + Math.random().toString(36).substring(2, 6)).toUpperCase();
 }
 
-export function encodeDataFrame(transferId, index, total, bytes) {
-  return `${FRAME_PREFIX}:${transferId}:${index.toString(36).toUpperCase()}:${total.toString(36).toUpperCase()}:${base45Encode(bytes)}`;
+export function encodeDataFrame(transferId, seed, total, bytes) {
+  return `${FRAME_PREFIX}:${transferId}:${seed.toString(36).toUpperCase()}:${total.toString(36).toUpperCase()}:${base45Encode(bytes)}`;
 }
 
 /**
  * Parses a scanned QR string into
- *   { type: 'data', transferId, chunkIndex, totalChunks, bytes } or
+ *   { type: 'data', transferId, seed, totalChunks, bytes } or
  *   { type: 'meta', transferId, fileName, fileType, fileSize, fileHash, totalChunks } or
  *   null for foreign / corrupt codes.
  */
@@ -75,11 +77,11 @@ export function parseFrame(text) {
     // Base45 alphabet contains ':' so only the first 4 fields are split off
     const parts = text.split(':');
     if (parts.length < 5) return null;
-    const chunkIndex = parseInt(parts[2], 36);
+    const seed = parseInt(parts[2], 36);
     const totalChunks = parseInt(parts[3], 36);
-    if (!(chunkIndex >= 0 && chunkIndex < totalChunks)) return null;
+    if (!(seed >= 0 && totalChunks > 0)) return null;
     try {
-      return { type: 'data', transferId: parts[1], chunkIndex, totalChunks, bytes: base45Decode(parts.slice(4).join(':')) };
+      return { type: 'data', transferId: parts[1], seed, totalChunks, bytes: base45Decode(parts.slice(4).join(':')) };
     } catch {
       return null;
     }
@@ -94,12 +96,16 @@ export function parseFrame(text) {
 }
 
 /**
- * Slices a file into the ordered list of QR payload strings the sender cycles through.
- * A metadata frame is inserted before every META_EVERY data frames.
+ * Prepares a file for sending. Fountain packets are endless, so frames are generated on
+ * demand by position instead of being precomputed: each block of frames is one metadata
+ * frame followed by META_EVERY packets.
+ *
+ * @returns {{ transferId, totalChunks, framesPerPass, frameAt(n: number): string }}
  */
-export function buildFrames({ bytes, fileName, fileType, fileHash, chunkSize }) {
+export function createEncoder({ bytes, fileName, fileType, fileHash, chunkSize }) {
   const transferId = generateTransferId();
-  const totalChunks = Math.ceil(bytes.length / chunkSize);
+  const chunks = splitChunks(bytes, chunkSize);
+  const totalChunks = chunks.length;
   const metaFrame = JSON.stringify({
     protocol: PROTOCOL_ID,
     transferId,
@@ -110,12 +116,19 @@ export function buildFrames({ bytes, fileName, fileType, fileHash, chunkSize }) 
     totalChunks
   });
 
-  const frames = [];
-  for (let i = 0; i < totalChunks; i++) {
-    if (i % META_EVERY === 0) frames.push(metaFrame);
-    frames.push(encodeDataFrame(transferId, i, totalChunks, bytes.subarray(i * chunkSize, (i + 1) * chunkSize)));
-  }
-  return { transferId, totalChunks, frames };
+  const block = META_EVERY + 1; // 1 metadata frame + META_EVERY packets
+  return {
+    transferId,
+    totalChunks,
+    // Frames needed to show every chunk once (the systematic first pass), metadata included
+    framesPerPass: totalChunks + Math.ceil(totalChunks / META_EVERY),
+    frameAt(n) {
+      const position = n % block;
+      if (position === 0) return metaFrame;
+      const seed = Math.floor(n / block) * META_EVERY + (position - 1);
+      return encodeDataFrame(transferId, seed, totalChunks, encodePacket(chunks, seed));
+    }
+  };
 }
 
 /** SHA-256 hex digest via Web Crypto. */

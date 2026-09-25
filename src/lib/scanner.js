@@ -24,9 +24,15 @@ export function getNativeDetector() {
   return detectorPromise;
 }
 
+/**
+ * Lists video inputs. Labels are only filled in once camera permission has been granted,
+ * so call this after the scanner has started: enumerating on page load would either
+ * return unlabeled devices or force an extra permission prompt and camera grab.
+ */
 export async function listCameras() {
   try {
-    return await (await loadHtml5Qrcode()).getCameras();
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    return devices.filter(d => d.kind === 'videoinput').map((d, i) => ({ id: d.deviceId, label: d.label || `Camera ${i + 1}` }));
   } catch (err) {
     console.warn('Unable to enumerate cameras:', err);
     return [];
@@ -34,18 +40,41 @@ export async function listCameras() {
 }
 
 /**
+ * Camera constraints to try in order. Without an explicit device, `exact` forces a
+ * rear-facing camera (phones list several cameras and would otherwise open the front one);
+ * the looser attempts cover laptops that only have a front camera.
+ * Browsers also default to ~640x480, too low for dense QR frames, hence the HD request.
+ */
+function cameraAttempts(cameraId) {
+  const base = cameraId
+    ? [{ deviceId: { exact: cameraId } }]
+    : [{ facingMode: { exact: 'environment' } }, { facingMode: 'environment' }, {}];
+  return base.map(c => ({ ...c, width: { ideal: 1920 }, height: { ideal: 1080 } }));
+}
+
+/**
  * Starts the camera inside `container` (an element with an id) and calls onText for every decoded QR.
- * @returns {Promise<{native: boolean, stop: () => Promise<void>}>}
+ * @returns {Promise<{native: boolean, label: string, stop: () => Promise<void>}>}
  */
 export async function startScanner(container, cameraId, onText) {
-  const camera = cameraId ? { deviceId: { exact: cameraId } } : { facingMode: 'environment' };
-  // Browsers default to ~640x480, too low for dense QR frames
-  const hd = { ...camera, width: { ideal: 1920 }, height: { ideal: 1080 } };
-
+  const attempts = cameraAttempts(cameraId);
   const detector = await getNativeDetector();
+
   if (detector) {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: hd });
-    stream.getVideoTracks()[0].applyConstraints({ advanced: [{ focusMode: 'continuous' }] }).catch(() => {});
+    let stream = null;
+    let lastError = null;
+    for (const video of attempts) {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: false, video });
+        break;
+      } catch (err) {
+        lastError = err;
+      }
+    }
+    if (!stream) throw lastError;
+
+    const track = stream.getVideoTracks()[0];
+    track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }).catch(() => {});
 
     const video = document.createElement('video');
     video.playsInline = true;
@@ -68,6 +97,7 @@ export async function startScanner(container, cameraId, onText) {
 
     return {
       native: true,
+      label: track.label || track.getSettings().facingMode || 'camera',
       stop: async () => {
         running = false;
         stream.getTracks().forEach(t => t.stop());
@@ -78,15 +108,26 @@ export async function startScanner(container, cameraId, onText) {
 
   const Html5Qrcode = await loadHtml5Qrcode();
   const scanner = new Html5Qrcode(container.id);
-  await scanner.start(camera, {
-    fps: 30,
-    videoConstraints: hd,
-    qrbox: (w, h) => {
-      const edge = Math.floor(Math.min(w, h) * 0.85);
-      return { width: edge, height: edge };
-    },
-    aspectRatio: 1.0
-  }, onText, () => {});
-
-  return { native: false, stop: () => scanner.stop() };
+  let lastError = null;
+  for (const videoConstraints of attempts) {
+    try {
+      await scanner.start(videoConstraints, {
+        fps: 30,
+        videoConstraints,
+        qrbox: (w, h) => {
+          const edge = Math.floor(Math.min(w, h) * 0.85);
+          return { width: edge, height: edge };
+        },
+        aspectRatio: 1.0
+      }, onText, () => {});
+      return {
+        native: false,
+        label: container.querySelector('video')?.srcObject?.getVideoTracks?.()[0]?.label || 'camera',
+        stop: () => scanner.stop()
+      };
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  throw lastError;
 }

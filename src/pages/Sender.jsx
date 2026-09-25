@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { buildFrames, formatBytes, truncateMiddle } from '../lib/protocol.js';
+import { createEncoder, formatBytes, truncateMiddle } from '../lib/protocol.js';
 import { useHashedFile } from '../hooks/useHashedFile.js';
 import { useFrameLoop } from '../hooks/useFrameLoop.js';
 import { FileDrop, InfoGrid, ProgressBar, QrCanvas, Select, StatusBadge } from '../components/ui.jsx';
@@ -15,17 +15,17 @@ export default function Sender() {
   const transmissionRef = useRef(null);
   const wrapperRef = useRef(null);
 
-  const prepared = useMemo(() => (picked.status === 'READY'
-    ? buildFrames({ bytes: picked.bytes, fileName: picked.file.name, fileType: picked.file.type, fileHash: picked.hash, chunkSize })
+  const encoder = useMemo(() => (picked.status === 'READY'
+    ? createEncoder({ bytes: picked.bytes, fileName: picked.file.name, fileType: picked.file.type, fileHash: picked.hash, chunkSize })
     : null), [picked, chunkSize]);
-  const frames = prepared?.frames ?? [];
-  const frameCount = Math.ceil(frames.length / perFrame);
 
-  const { index, cycle, setPos } = useFrameLoop(frameCount, interval, mode === 'TRANSMITTING');
-  const texts = useMemo(() => frames.slice(index * perFrame, (index + 1) * perFrame), [frames, index, perFrame]);
+  const { n, setN } = useFrameLoop(interval, mode === 'TRANSMITTING');
+  const texts = useMemo(() => (encoder
+    ? Array.from({ length: perFrame }, (_, i) => encoder.frameAt(n * perFrame + i))
+    : []), [encoder, n, perFrame]);
 
-  // New file / chunk size / codes per frame: start again from frame 0
-  useEffect(() => setPos({ index: 0, cycle: 1 }), [prepared, perFrame, setPos]);
+  // New file / chunk size / codes per frame: start the packet stream again
+  useEffect(() => setN(0), [encoder, perFrame, setN]);
 
   const onFile = (file) => {
     setMode('SETUP');
@@ -33,18 +33,16 @@ export default function Sender() {
   };
 
   const start = () => {
-    setPos({ index: 0, cycle: 1 });
+    setN(0);
     setMode('TRANSMITTING');
     requestAnimationFrame(() => transmissionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' }));
   };
 
-  const scrub = (value) => {
-    if (mode === 'TRANSMITTING') setMode('PAUSED');
-    setPos(p => ({ ...p, index: value }));
-  };
-
   const status = mode === 'SETUP' ? picked.status : mode;
-  const pct = frameCount ? Math.round(((index + 1) / frameCount) * 100) : 0;
+  // Frames per pass = enough to show every chunk once; after that it is repair packets
+  const framesPerPass = encoder ? Math.ceil(encoder.framesPerPass / perFrame) : 0;
+  const pass = framesPerPass ? Math.floor(n / framesPerPass) + 1 : 1;
+  const pct = framesPerPass ? Math.round((((n % framesPerPass) + 1) / framesPerPass) * 100) : 0;
 
   return (
     <>
@@ -79,16 +77,16 @@ export default function Sender() {
         )}
 
         <div style={{ marginTop: '1.25rem', display: 'flex', justifyContent: 'flex-end' }}>
-          <button className="btn-ctrl btn-primary" disabled={!prepared} onClick={start}>Start Transfer</button>
+          <button className="btn-ctrl btn-primary" disabled={!encoder} onClick={start}>Start Transfer</button>
         </div>
       </section>
 
-      {mode !== 'SETUP' && prepared && (
+      {mode !== 'SETUP' && encoder && (
         <section className="card" ref={transmissionRef}>
           <div className="card-title">
             <span>2. QR Frame Transmission</span>
             <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-              <span className="badge badge-primary">Cycle: {cycle}</span>
+              <span className="badge badge-primary">{pass === 1 ? 'Pass 1' : `Repair pass ${pass}`}</span>
               <span className="badge badge-neutral">{interval} ms</span>
             </div>
           </div>
@@ -99,23 +97,18 @@ export default function Sender() {
             </div>
           </div>
 
-          <ProgressBar left={`Frame ${index + 1} / ${frameCount}`} right={`${pct}% Complete`} pct={pct} />
-
-          <div style={{ margin: '0.5rem 0 1rem', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-            <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontWeight: 600 }}>Scrub:</span>
-            <input
-              type="range" min="0" max={frameCount - 1} value={index}
-              onChange={e => scrub(Number(e.target.value))}
-              style={{ flex: 1, cursor: 'pointer' }}
-            />
-          </div>
+          <ProgressBar
+            left={`Frame ${(n % framesPerPass) + 1} / ${framesPerPass}`}
+            right={pass === 1 ? `${pct}% of first pass` : `${pct}% of repair pass ${pass}`}
+            pct={pct}
+          />
 
           <div className="controls-toolbar">
             {mode === 'TRANSMITTING'
               ? <button className="btn-ctrl btn-secondary" onClick={() => setMode('PAUSED')}>⏸ Pause</button>
               : <button className="btn-ctrl btn-primary" onClick={() => setMode('TRANSMITTING')}>▶ Resume</button>}
             <button className="btn-ctrl btn-danger" onClick={() => setMode('STOPPED')}>⏹ Stop</button>
-            <button className="btn-ctrl btn-secondary" onClick={() => setPos({ index: 0, cycle: 1 })}>↺ Restart Cycle</button>
+            <button className="btn-ctrl btn-secondary" onClick={() => setN(0)}>↺ Restart</button>
             <button className="btn-ctrl btn-secondary" onClick={() => wrapperRef.current.requestFullscreen?.()}>⛶ Fullscreen</button>
           </div>
 
@@ -128,6 +121,7 @@ export default function Sender() {
                 <li>Keep sender screen and receiver camera steady</li>
                 <li>Keep every QR code inside the receiver camera view</li>
                 <li>Avoid direct glare, sunlight, or screen reflections</li>
+                <li>Keep sending until the receiver reports 100%: every frame after the first pass repairs whatever it missed</li>
               </ul>
             </div>
           </div>
